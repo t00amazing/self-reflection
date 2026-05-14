@@ -686,12 +686,18 @@ async function autoFill(idF, nameF, classF) {
 // ── API
 async function api(method, params) {
   if (API_URL === 'https://script.google.com/macros/s/AKfycbzo3mGVG3PQm-Rh-2ZyLiSvtzH7zaEhbjMwENXkI72ZBg9f1cZ0n1L6xmLoT-eHa8tBmA/exec') return mock(params);
-  if (method === 'GET') {
-    const r = await fetch(`${API_URL}?studentId=${params.studentId}&action=validateStudent`);
-    return r.json();
+
+  // Apps Script CORS 우회: GET + payload 인코딩 방식
+  // POST는 preflight 문제로 차단되므로 GET으로 통일
+  const payload = encodeURIComponent(JSON.stringify(params));
+  const url = API_URL + '?payload=' + payload;
+  try {
+    const r = await fetch(url, {redirect: 'follow'});
+    const text = await r.text();
+    return JSON.parse(text);
+  } catch(e) {
+    throw new Error('API 호출 실패: ' + e.message);
   }
-  const r = await fetch(API_URL, {method:'POST', body: JSON.stringify(params)});
-  return r.json();
 }
 
 // ── 성찰 제출
