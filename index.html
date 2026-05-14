@@ -685,7 +685,7 @@ async function autoFill(idF, nameF, classF) {
 
 // ── API
 async function api(method, params) {
-  if (API_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL_HERE') return mock(params);
+  if (API_URL === 'https://script.google.com/macros/s/AKfycbzo3mGVG3PQm-Rh-2ZyLiSvtzH7zaEhbjMwENXkI72ZBg9f1cZ0n1L6xmLoT-eHa8tBmA/exec') return mock(params);
   if (method === 'GET') {
     const r = await fetch(`${API_URL}?studentId=${params.studentId}&action=validateStudent`);
     return r.json();
