@@ -638,7 +638,11 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 <div id="toast"></div>
 
 <script>
-const API_URL = 'https://script.google.com/macros/s/AKfycbzo3mGVG3PQm-Rh-2ZyLiSvtzH7zaEhbjMwENXkI72ZBg9f1cZ0n1L6xmLoT-eHa8tBmA/exec';
+// ─────────────────────────────────────────
+//  ★ 여기에 Apps Script 웹앱 URL을 붙여넣으세요
+// ─────────────────────────────────────────
+const API_URL = 'https://script.google.com/macros/s/AKfycbwfeFjyXY4FR-hwYC9InTCcQzzUvDoqomrtbcAOHfaIhsbJOYGlr9O5npGXvhiQP2PK/exec';
+
 let lastResult = null;
 
 // ── 화면 전환
@@ -649,7 +653,7 @@ function go(id) {
   document.getElementById('hd-home').classList.toggle('on', id !== 's-home');
 }
 
-// ── 오늘 날짜
+// ── 오늘 날짜 기본값
 (function(){
   const t = new Date().toISOString().slice(0,10);
   document.getElementById('r-date').value = t;
@@ -663,7 +667,40 @@ function setEffort(val) {
   document.querySelectorAll('#r-effort-stars .eff-btn').forEach(b =>
     b.classList.toggle('on', parseInt(b.dataset.v) <= val));
   const lb = ['','매우 부족','부족','보통','충실','매우 충실'];
-  document.getElementById('r-effort-label').textContent = `${val}점 — ${lb[val]}`;
+  document.getElementById('r-effort-label').textContent = val + '점 — ' + lb[val];
+}
+
+// ── 교시 체크박스 읽기
+function getPeriods(prefix) {
+  const checked = [];
+  for (let i = 1; i <= 7; i++) {
+    const el = document.getElementById(prefix + '-p' + i);
+    if (el && el.checked) checked.push(el.value);
+  }
+  return checked.join(',');
+}
+
+// ─────────────────────────────────────────
+//  API 호출 (fetch POST + CORS 헤더)
+//  Apps Script doOptions + doPost 로 처리
+// ─────────────────────────────────────────
+async function callApi(params) {
+  // 테스트 모드
+  if (!API_URL || API_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL_HERE') {
+    return mockResponse(params);
+  }
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' }, // text/plain = preflight 없음
+    body: JSON.stringify(params),
+    redirect: 'follow',
+  });
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('응답 오류: ' + text.slice(0, 200));
+  }
 }
 
 // ── 학번 자동완성
@@ -671,346 +708,234 @@ async function autoFill(idF, nameF, classF) {
   const val = document.getElementById(idF).value.trim();
   if (!val || val.length < 4) return;
   try {
-    const res = await api('GET', {studentId: val});
-    if (res?.valid) {
+    const res = await callApi({ action: 'validateStudent', studentId: val });
+    if (res && res.valid) {
       document.getElementById(nameF).value = res.name;
       if (classF) document.getElementById(classF).value = res.classroom;
     } else {
-      toast(res?.message || '등록되지 않은 학번입니다.', 'error');
+      toast((res && res.message) || '등록되지 않은 학번입니다.', 'error');
       document.getElementById(nameF).value = '';
       if (classF) document.getElementById(classF).value = '';
     }
-  } catch {}
-}
-
-// ── API
-// iframe + form POST 방식으로 CORS 완전 우회
-// Apps Script는 POST preflight 없이 form submit은 허용함
-function apiPost(params) {
-  return new Promise((resolve, reject) => {
-    const iframeId = '_if_' + Date.now();
-    const formId   = '_fm_' + Date.now();
-
-    // 응답 수신용 숨김 iframe
-    const iframe = document.createElement('iframe');
-    iframe.id   = iframeId;
-    iframe.name = iframeId;
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-
-    // POST form 생성
-    const form = document.createElement('form');
-    form.id     = formId;
-    form.method = 'POST';
-    form.action = API_URL;
-    form.target = iframeId;
-    form.style.display = 'none';
-
-    const input = document.createElement('input');
-    input.type  = 'hidden';
-    input.name  = 'payload';
-    input.value = JSON.stringify(params);
-    form.appendChild(input);
-    document.body.appendChild(form);
-
-    const cleanup = () => {
-      iframe.remove();
-      form.remove();
-    };
-
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error('요청 시간 초과 (15초)'));
-    }, 15000);
-
-    iframe.onload = () => {
-      clearTimeout(timer);
-      try {
-        const text = iframe.contentDocument
-          ? iframe.contentDocument.body.innerText
-          : iframe.contentWindow.document.body.innerText;
-        cleanup();
-        resolve(JSON.parse(text));
-      } catch(e) {
-        cleanup();
-        // iframe 접근 차단 = 제출은 성공했으나 응답을 못 읽는 경우
-        // Apps Script가 리디렉트하면 cross-origin이 되어 접근 불가
-        // 이 경우 제출은 성공한 것으로 간주
-        resolve({ success: true, message: '저장 완료 (응답 확인 불가)' });
-      }
-    };
-
-    form.submit();
-  });
-}
-
-// JSONP 방식 (조회 전용 — GET, 데이터 작을 때)
-function apiGet(params) {
-  return new Promise((resolve, reject) => {
-    const cbName = '_cb_' + Date.now() + '_' + Math.floor(Math.random()*9999);
-    window[cbName] = (data) => {
-      delete window[cbName];
-      const s = document.getElementById(cbName);
-      if (s) s.remove();
-      resolve(data);
-    };
-    const url = API_URL + '?payload=' + encodeURIComponent(JSON.stringify(params)) + '&callback=' + cbName;
-    const script = document.createElement('script');
-    script.id  = cbName;
-    script.src = url;
-    script.onerror = () => {
-      delete window[cbName];
-      script.remove();
-      reject(new Error('네트워크 오류'));
-    };
-    setTimeout(() => {
-      if (window[cbName]) { delete window[cbName]; script.remove(); reject(new Error('시간 초과')); }
-    }, 10000);
-    document.head.appendChild(script);
-  });
-}
-
-async function api(method, params) {
-  if (API_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL_HERE') return mock(params);
-  const action = params.action;
-  // 쓰기(저장) 작업 → iframe POST (CORS 완전 우회, 데이터 크기 제한 없음)
-  if (action === 'submitReflection' || action === 'submitPeerReview') {
-    return apiPost(params);
+  } catch(e) {
+    toast('연결 오류: ' + e.message, 'error');
   }
-  // 읽기(조회) 작업 → JSONP GET
-  return apiGet(params);
 }
 
 // ── 성찰 제출
 async function submitReflection() {
-  const id=g('r-id'),name=g('r-name'),cls=g('r-class'),date=g('r-date'),sub=g('r-subject'),lrn=g('r-learned');
-  if (!id||!date||!sub||!lrn){toast('학번, 날짜, 과목, 배운 점은 필수입니다.','error');return;}
-  if (!name){toast('학번을 확인하고 이름이 자동입력됐는지 확인하세요.','error');return;}
-  if (!effortVal){toast('노력도를 선택해 주세요.','error');return;}
-  setLoad('r',true);
+  const id=g('r-id'), name=g('r-name'), cls=g('r-class'),
+        date=g('r-date'), sub=g('r-subject'), lrn=g('r-learned');
+  if (!id||!date||!sub||!lrn) { toast('학번, 날짜, 과목, 배운 점은 필수입니다.','error'); return; }
+  if (!name) { toast('학번을 확인하고 이름이 자동입력됐는지 확인하세요.','error'); return; }
+  if (!effortVal) { toast('노력도를 선택해 주세요.','error'); return; }
+  setLoad('r', true);
   try {
-    const res = await api('POST',{action:'submitReflection',data:{
-      studentId:id,name,classroom:cls,date,subject:sub,
-      learned:lrn,difficult:g('r-difficult'),wantToKnow:g('r-want'),effort:effortVal,period:getPeriods('r')
-    }});
-    if (res.success){toast('성찰 일지가 저장되었습니다.','success');setTimeout(()=>go('s-home'),1400);resetR();}
-    else toast(res.message||'저장에 실패했습니다.','error');
-  } catch {toast('서버 연결에 실패했습니다.','error');}
-  setLoad('r',false);
+    const res = await callApi({
+      action: 'submitReflection',
+      data: {
+        studentId:id, name, classroom:cls, date, subject:sub,
+        learned:lrn, difficult:g('r-difficult'), wantToKnow:g('r-want'),
+        effort:effortVal, period:getPeriods('r')
+      }
+    });
+    if (res && res.success) {
+      toast('성찰 일지가 저장되었습니다.','success');
+      setTimeout(() => go('s-home'), 1400);
+      resetR();
+    } else {
+      toast((res && res.message) || '저장에 실패했습니다.','error');
+    }
+  } catch(e) { toast('오류: ' + e.message, 'error'); }
+  setLoad('r', false);
 }
 
 // ── 동료평가 제출
 async function submitPeer() {
-  const myId=g('p-my-id'),myName=g('p-my-name'),myCls=g('p-my-class');
-  const peerId=g('p-peer-id'),peerName=g('p-peer-name');
-  const date=g('p-date'),sub=g('p-subject'),good=g('p-good');
-  if (!myId||!peerId||!date||!sub||!good){toast('학번, 날짜, 과목, Tell(잘한 점)은 필수입니다.','error');return;}
-  if (!myName||!peerName){toast('학번을 확인해 이름이 자동입력됐는지 확인하세요.','error');return;}
-  if (myId===peerId){toast('자기 자신은 평가할 수 없습니다.','error');return;}
-  setLoad('p',true);
+  const myId=g('p-my-id'), myName=g('p-my-name'), myCls=g('p-my-class');
+  const peerId=g('p-peer-id'), peerName=g('p-peer-name');
+  const date=g('p-date'), sub=g('p-subject'), good=g('p-good');
+  if (!myId||!peerId||!date||!sub||!good) { toast('학번, 날짜, 과목, Tell(잘한 점)은 필수입니다.','error'); return; }
+  if (!myName||!peerName) { toast('학번을 확인해 이름이 자동입력됐는지 확인하세요.','error'); return; }
+  if (myId===peerId) { toast('자기 자신은 평가할 수 없습니다.','error'); return; }
+  setLoad('p', true);
   try {
-    const res = await api('POST',{action:'submitPeerReview',data:{
-      reviewerId:myId,reviewerName:myName,classroom:myCls,
-      revieweeId:peerId,revieweeName:peerName,date,subject:sub,
-      cooperation:+document.getElementById('p-coop').value,
-      communication:+document.getElementById('p-comm').value,
-      contribution:+document.getElementById('p-cont').value,
-      goodPoints:good,improvements:g('p-improve'),askQuestion:g('p-ask'),period:getPeriods('p'),
-      isAnonymous:document.getElementById('p-anon').checked
-    }});
-    if (res.success){toast('동료 평가가 저장되었습니다.','success');setTimeout(()=>go('s-home'),1400);resetP();}
-    else toast(res.message||'저장에 실패했습니다.','error');
-  } catch {toast('서버 연결에 실패했습니다.','error');}
-  setLoad('p',false);
+    const res = await callApi({
+      action: 'submitPeerReview',
+      data: {
+        reviewerId:myId, reviewerName:myName, classroom:myCls,
+        revieweeId:peerId, revieweeName:peerName, date, subject:sub,
+        cooperation:+document.getElementById('p-coop').value,
+        communication:+document.getElementById('p-comm').value,
+        contribution:+document.getElementById('p-cont').value,
+        goodPoints:good, askQuestion:g('p-ask'), improvements:g('p-improve'),
+        period:getPeriods('p'),
+        isAnonymous:document.getElementById('p-anon').checked
+      }
+    });
+    if (res && res.success) {
+      toast('동료 평가가 저장되었습니다.','success');
+      setTimeout(() => go('s-home'), 1400);
+      resetP();
+    } else {
+      toast((res && res.message) || '저장에 실패했습니다.','error');
+    }
+  } catch(e) { toast('오류: ' + e.message, 'error'); }
+  setLoad('p', false);
 }
 
 // ── 기록 조회
 async function lookupRecords() {
   const id = document.getElementById('l-id').value.trim();
-  if (!id){toast('학번을 입력하세요.','error');return;}
+  if (!id) { toast('학번을 입력하세요.','error'); return; }
   toast('조회 중...','');
   try {
-    const res = await api('POST',{action:'getStudentRecords',studentId:id});
+    const res = await callApi({ action: 'getStudentRecords', studentId: id });
     document.getElementById('toast').classList.remove('show');
-    if (!res || !res.success){toast((res&&res.message)||'기록이 없습니다.','error');return;}
+    if (!res || !res.success) { toast((res && res.message) || '기록이 없습니다.','error'); return; }
     lastResult = res;
-    // 저장 버튼 항상 표시
     document.getElementById('l-result').style.display = 'block';
     document.getElementById('save-btn').style.display = 'inline-flex';
     const s = res.student;
     document.getElementById('l-av').textContent = s ? s.name[0] : id[0];
-    document.getElementById('l-name').textContent = s ? `${s.name} (${s.id})` : `학번 ${id}`;
-    document.getElementById('l-meta').textContent = s ? `${s.classroom} · ${s.group||''}` : '';
-    renderTimeline(res.reflections||[]);
-    renderPeers('l-peers', res.peerReviews||[], false);
-    renderPeers('l-mypeers', res.myPeerReviews||[], true);
-  } catch(e){toast('서버 연결에 실패했습니다: '+e.message,'error');}
+    document.getElementById('l-name').textContent = s ? (s.name + ' (' + s.id + ')') : ('학번 ' + id);
+    document.getElementById('l-meta').textContent = s ? (s.classroom + ' · ' + (s.group||'')) : '';
+    renderTimeline(res.reflections || []);
+    renderPeers('l-peers', res.peerReviews || [], false);
+    renderPeers('l-mypeers', res.myPeerReviews || [], true);
+  } catch(e) { toast('오류: ' + e.message, 'error'); }
 }
 
 function renderTimeline(list) {
   document.getElementById('l-reflections').innerHTML = list.length
-    ? `<div class="tl">${list.map(r=>`
-        <div class="tl-item">
-          <div class="tl-spine"><div class="tl-dot"></div><div class="tl-line"></div></div>
-          <div class="tl-body">
-            <div class="tl-date">${fd(r.date)}</div>
-            <div class="tl-subj">${r.subject} <span class="badge bd-amber">⭐ ${r.effort}점</span></div>
-            <div class="tl-block"><div class="tl-blk-lbl">배운 점</div><div class="tl-blk-txt">${r.learned}</div></div>
-            ${r.difficult?`<div class="tl-block"><div class="tl-blk-lbl">어려웠던 점</div><div class="tl-blk-txt">${r.difficult}</div></div>`:''}
-            ${r.wantToKnow?`<div class="tl-block"><div class="tl-blk-lbl">더 알고 싶은 것</div><div class="tl-blk-txt">${r.wantToKnow}</div></div>`:''}
-          </div>
-        </div>`).join('')}</div>`
+    ? '<div class="tl">' + list.map(r =>
+        '<div class="tl-item">' +
+          '<div class="tl-spine"><div class="tl-dot"></div><div class="tl-line"></div></div>' +
+          '<div class="tl-body">' +
+            '<div class="tl-date">' + fd(r.date) + (r.period ? ' · ' + r.period : '') + '</div>' +
+            '<div class="tl-subj">' + r.subject + ' <span class="badge bd-amber">★ ' + r.effort + '점</span></div>' +
+            '<div class="tl-block"><div class="tl-blk-lbl">배운 점</div><div class="tl-blk-txt">' + r.learned + '</div></div>' +
+            (r.difficult ? '<div class="tl-block"><div class="tl-blk-lbl">어려웠던 점</div><div class="tl-blk-txt">' + r.difficult + '</div></div>' : '') +
+            (r.wantToKnow ? '<div class="tl-block"><div class="tl-blk-lbl">더 알고 싶은 것</div><div class="tl-blk-txt">' + r.wantToKnow + '</div></div>' : '') +
+          '</div>' +
+        '</div>').join('') + '</div>'
     : empty('📭','아직 성찰 일지 기록이 없습니다.');
 }
 
 function renderPeers(elId, list, isMine) {
   document.getElementById(elId).innerHTML = list.length
-    ? list.map(p=>`
-        <div class="peer-card">
-          <div class="pc-top">
-            <div>
-              <div class="pc-who">${isMine ? `→ ${p.revieweeName}` : p.reviewerName}</div>
-              <div class="pc-tags">
-                <span class="badge bd-default">${fd(p.date)}</span>
-                <span class="badge bd-default">${p.subject}</span>
-                ${p.isAnonymous==='Y'?'<span class="badge bd-purple">익명</span>':''}
-              </div>
-            </div>
-          </div>
-          <div class="pc-scores">
-            <div class="sc-box"><span class="sc-lbl">협력</span><span class="sc-val">${p.cooperation}</span></div>
-            <div class="sc-box"><span class="sc-lbl">소통</span><span class="sc-val">${p.communication}</span></div>
-            <div class="sc-box"><span class="sc-lbl">기여도</span><span class="sc-val">${p.contribution}</span></div>
-            <div class="sc-box"><span class="sc-lbl">평균</span><span class="sc-val">${Number(p.avg).toFixed(1)}</span></div>
-          </div>
-          <div class="pc-comments">
-            <div class="pc-cmt"><span class="pc-cmt-ico">💬</span><span class="pc-cmt-txt">${p.goodPoints}</span></div>
-            ${p.askQuestion?`<div class="pc-cmt"><span class="pc-cmt-ico">🙋</span><span class="pc-cmt-txt" style="color:var(--blue)">${p.askQuestion}</span></div>`:''}
-            ${p.improvements?`<div class="pc-cmt"><span class="pc-cmt-ico">📌</span><span class="pc-cmt-txt" style="color:var(--muted-fg)">${p.improvements}</span></div>`:''}
-          </div>
-        </div>`).join('')
-    : empty(isMine?'📝':'🤝', `아직 ${isMine?'작성한':'받은'} 동료 평가가 없습니다.`);
+    ? list.map(p =>
+        '<div class="peer-card">' +
+          '<div class="pc-top"><div>' +
+            '<div class="pc-who">' + (isMine ? '→ ' + p.revieweeName : p.reviewerName) + '</div>' +
+            '<div class="pc-tags">' +
+              '<span class="badge bd-default">' + fd(p.date) + '</span>' +
+              '<span class="badge bd-default">' + p.subject + '</span>' +
+              (p.isAnonymous==='Y' ? '<span class="badge bd-purple">익명</span>' : '') +
+            '</div>' +
+          '</div></div>' +
+          '<div class="pc-scores">' +
+            '<div class="sc-box"><span class="sc-lbl">협력</span><span class="sc-val">' + p.cooperation + '</span></div>' +
+            '<div class="sc-box"><span class="sc-lbl">소통</span><span class="sc-val">' + p.communication + '</span></div>' +
+            '<div class="sc-box"><span class="sc-lbl">기여도</span><span class="sc-val">' + p.contribution + '</span></div>' +
+            '<div class="sc-box"><span class="sc-lbl">평균</span><span class="sc-val">' + Number(p.avg).toFixed(1) + '</span></div>' +
+          '</div>' +
+          '<div class="pc-comments">' +
+            '<div class="pc-cmt"><span class="pc-cmt-ico">💬</span><span class="pc-cmt-txt">' + p.goodPoints + '</span></div>' +
+            (p.askQuestion ? '<div class="pc-cmt"><span class="pc-cmt-ico">🙋</span><span class="pc-cmt-txt" style="color:var(--blue)">' + p.askQuestion + '</span></div>' : '') +
+            (p.improvements ? '<div class="pc-cmt"><span class="pc-cmt-ico">📌</span><span class="pc-cmt-txt" style="color:var(--muted-fg)">' + p.improvements + '</span></div>' : '') +
+          '</div>' +
+        '</div>').join('')
+    : empty(isMine ? '📝':'🤝', '아직 ' + (isMine?'작성한':'받은') + ' 동료 평가가 없습니다.');
 }
 
 function empty(ic, msg) {
-  return `<div class="empty"><div class="empty-ic">${ic}</div><div class="empty-txt">${msg}</div></div>`;
+  return '<div class="empty"><div class="empty-ic">' + ic + '</div><div class="empty-txt">' + msg + '</div></div>';
 }
 
-// ── 로컬 저장 (파일 다운로드)
+// ── 로컬 저장
 function saveToLocal() {
   if (!lastResult) return;
-  const s = lastResult.student;
-  const name = s ? s.name : document.getElementById('l-id').value;
-  const today = new Date().toISOString().slice(0,10);
-  let t = `========================================\n`;
-  t += `  ${name} 학생 · 성찰 & 동료평가 기록\n`;
-  t += `  조회일: ${today}\n`;
-  t += `========================================\n\n`;
+  var s = lastResult.student;
+  var name = s ? s.name : document.getElementById('l-id').value;
+  var today = new Date().toISOString().slice(0,10);
+  var nl = String.fromCharCode(10);
+  var line = '----------------------------------------';
+  var t = '';
+  t += '========================================'  + nl;
+  t += '  ' + name + ' 학생 성찰 & 동료평가 기록' + nl;
+  t += '  조회일: ' + today + nl;
+  t += '========================================' + nl + nl;
 
-  t += `▶ 성찰 일지 (${(lastResult.reflections||[]).length}건)\n`;
-  t += `────────────────────────────────────────\n`;
-  (lastResult.reflections||[]).forEach((r,i)=>{
-    t += `[${i+1}] ${fd(r.date)} | ${r.subject} | 노력도 ${r.effort}점\n`;
-    t += `    배운 점: ${r.learned}\n`;
-    if (r.difficult) t += `    어려웠던 점: ${r.difficult}\n`;
-    if (r.wantToKnow) t += `    더 알고 싶은 것: ${r.wantToKnow}\n`;
-    t += '\n';
+  var refs = lastResult.reflections || [];
+  t += '▶ 성찰 일지 (' + refs.length + '건)' + nl;
+  t += line + nl;
+  refs.forEach(function(r, i) {
+    t += '[' + (i+1) + '] ' + fd(r.date) + ' | ' + r.subject;
+    if (r.period) t += ' | ' + r.period;
+    t += ' | 노력도 ' + r.effort + '점' + nl;
+    t += '    배운 점: ' + r.learned + nl;
+    if (r.difficult) t += '    어려웠던 점: ' + r.difficult + nl;
+    if (r.wantToKnow) t += '    더 알고 싶은 것: ' + r.wantToKnow + nl;
+    t += nl;
   });
 
-  t += `▶ 받은 동료 평가 (${(lastResult.peerReviews||[]).length}건)\n`;
-  t += `────────────────────────────────────────\n`;
-  (lastResult.peerReviews||[]).forEach((p,i)=>{
-    t += `[${i+1}] ${fd(p.date)} | ${p.subject} | 평가자: ${p.reviewerName}\n`;
-    t += `    협력 ${p.cooperation} / 소통 ${p.communication} / 기여도 ${p.contribution} / 평균 ${Number(p.avg).toFixed(1)}\n`;
-    t += `    [T] 잘한 점: ${p.goodPoints}\n`;
-    if (p.askQuestion) t += `    [A] 질문: ${p.askQuestion}\n`;
-    if (p.improvements) t += `    [G] 제안: ${p.improvements}\n`;
-    t += '\n';
+  var peers = lastResult.peerReviews || [];
+  t += '▶ 받은 동료 평가 (' + peers.length + '건)' + nl;
+  t += line + nl;
+  peers.forEach(function(p, i) {
+    t += '[' + (i+1) + '] ' + fd(p.date) + ' | ' + p.subject + ' | 평가자: ' + p.reviewerName + nl;
+    t += '    협력 ' + p.cooperation + ' / 소통 ' + p.communication + ' / 기여도 ' + p.contribution + ' / 평균 ' + Number(p.avg).toFixed(1) + nl;
+    t += '    [T] ' + p.goodPoints + nl;
+    if (p.askQuestion) t += '    [A] ' + p.askQuestion + nl;
+    if (p.improvements) t += '    [G] ' + p.improvements + nl;
+    t += nl;
   });
 
-  t += `▶ 내가 한 동료 평가 (${(lastResult.myPeerReviews||[]).length}건)\n`;
-  t += `────────────────────────────────────────\n`;
-  (lastResult.myPeerReviews||[]).forEach((p,i)=>{
-    t += `[${i+1}] ${fd(p.date)} | ${p.subject} | 평가 대상: ${p.revieweeName}${p.isAnonymous==='Y'?' (익명)':''}\n`;
-    t += `    협력 ${p.cooperation} / 소통 ${p.communication} / 기여도 ${p.contribution} / 평균 ${Number(p.avg).toFixed(1)}\n`;
-    t += `    [T] 잘한 점: ${p.goodPoints}\n`;
-    if (p.askQuestion) t += `    [A] 질문: ${p.askQuestion}\n`;
-    if (p.improvements) t += `    [G] 제안: ${p.improvements}\n`;
-    t += '\n';
+  var myPeers = lastResult.myPeerReviews || [];
+  t += '▶ 내가 한 동료 평가 (' + myPeers.length + '건)' + nl;
+  t += line + nl;
+  myPeers.forEach(function(p, i) {
+    t += '[' + (i+1) + '] ' + fd(p.date) + ' | ' + p.subject + ' | 평가 대상: ' + p.revieweeName;
+    if (p.isAnonymous === 'Y') t += ' (익명)';
+    t += nl;
+    t += '    협력 ' + p.cooperation + ' / 소통 ' + p.communication + ' / 기여도 ' + p.contribution + ' / 평균 ' + Number(p.avg).toFixed(1) + nl;
+    t += '    [T] ' + p.goodPoints + nl;
+    if (p.askQuestion) t += '    [A] ' + p.askQuestion + nl;
+    if (p.improvements) t += '    [G] ' + p.improvements + nl;
+    t += nl;
   });
 
-  const blob = new Blob([t], {type:'text/plain;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `${name}_성찰기록_${today}.txt`; a.click();
+  var blob = new Blob([t], {type: 'text/plain;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = name + '_성찰기록_' + today + '.txt';
+  a.click();
   URL.revokeObjectURL(url);
-  toast('파일이 저장되었습니다.','success');
+  toast('파일이 저장되었습니다.', 'success');
 }
-
-// ── 탭
+// ── 탭 전환
 function switchTab(name) {
   const order = ['reflections','peers','mypeers'];
-  document.querySelectorAll('.tab-btn').forEach((b,i)=>b.classList.toggle('on',order[i]===name));
-  order.forEach(n=>document.getElementById('tab-'+n).classList.toggle('on',n===name));
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('on', order[i]===name));
+  order.forEach(n => document.getElementById('tab-'+n).classList.toggle('on', n===name));
 }
 
-// ── 유틸
-function g(id){return document.getElementById(id).value.trim();}
-function fd(d){if(!d)return'';const s=typeof d==='string'?d:new Date(d).toISOString();return s.slice(0,10);}
-function toast(msg,type){
-  const t=document.getElementById('toast');
-  t.textContent=msg; t.className=type?`show ${type}`:'show';
-  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2600);
-}
-function setLoad(p,on){
-  document.getElementById(`${p}-spinner`).style.display=on?'block':'none';
-  document.getElementById(`${p}-submit-text`).textContent=on?'저장 중...':(p==='r'?'성찰 일지 제출':'동료 평가 제출');
-  document.getElementById(`${p}-submit-btn`).disabled=on;
-}
-// ── 교시 체크박스 읽기
-function getPeriods(prefix) {
-  const checked = [];
-  for(let i=1;i<=7;i++){
-    const el = document.getElementById(prefix+'-p'+i);
-    if(el && el.checked) checked.push(el.value);
-  }
-  return checked.join(',');
-}
-
-function resetR(){
-  ['r-id','r-name','r-class','r-learned','r-difficult','r-want'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('r-subject').value=''; effortVal=0;
-  document.querySelectorAll('#r-effort-stars .eff-btn').forEach(b=>b.classList.remove('on'));
-  document.getElementById('r-effort-label').textContent='1 = 매우 부족 · 5 = 매우 충실';
-  document.getElementById('r-date').value=new Date().toISOString().slice(0,10);
-  for(let i=1;i<=7;i++){const el=document.getElementById('r-p'+i);if(el)el.checked=false;}
-}
-function resetP(){
-  ['p-my-id','p-my-name','p-my-class','p-peer-id','p-peer-name','p-good','p-ask','p-improve'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('p-subject').value=''; document.getElementById('p-anon').checked=false;
-  ['p-coop','p-comm','p-cont'].forEach(id=>{document.getElementById(id).value=3;document.getElementById(id+'-v').textContent='3';});
-  document.getElementById('p-date').value=new Date().toISOString().slice(0,10);
-  for(let i=1;i<=7;i++){const el=document.getElementById('p-p'+i);if(el)el.checked=false;}
-}
-
-// ── 관리자 기능
-const ADMIN_PW = 'teacher1234'; // ← 비밀번호 여기서 변경
+// ── 관리자
+const ADMIN_PW = 'teacher1234';
 let adminLoggedIn = false;
-
 function adminLogin() {
-  const pw = document.getElementById('admin-pw').value;
-  if (pw === ADMIN_PW) {
+  if (document.getElementById('admin-pw').value === ADMIN_PW) {
     adminLoggedIn = true;
     document.getElementById('admin-login').style.display = 'none';
     document.getElementById('admin-dashboard').style.display = 'block';
-    // 오늘 날짜 기본값
     document.getElementById('ad-date').value = new Date().toISOString().slice(0,10);
   } else {
     toast('비밀번호가 틀렸습니다.','error');
     document.getElementById('admin-pw').value = '';
   }
 }
-
 function adminLogout() {
   adminLoggedIn = false;
   document.getElementById('admin-login').style.display = 'block';
@@ -1020,7 +945,6 @@ function adminLogout() {
   document.getElementById('ad-table-card').style.display = 'none';
   go('s-home');
 }
-
 async function adminSearch() {
   if (!adminLoggedIn) { toast('로그인이 필요합니다.','error'); return; }
   const date = document.getElementById('ad-date').value;
@@ -1028,28 +952,24 @@ async function adminSearch() {
   const subject = document.getElementById('ad-subject').value;
   toast('조회 중...','');
   try {
-    const res = await api('POST',{action:'getAdminData', date, period, subject});
+    const res = await callApi({ action:'getAdminData', date, period, subject });
     document.getElementById('toast').classList.remove('show');
-    if (!res || !res.success) { toast(res?.message||'조회 실패','error'); return; }
+    if (!res || !res.success) { toast((res&&res.message)||'조회 실패','error'); return; }
     renderAdminTable(res, date, period, subject);
-  } catch(e) { toast('서버 연결 실패: '+e.message,'error'); }
+  } catch(e) { toast('오류: ' + e.message,'error'); }
 }
-
 function renderAdminTable(res, date, period, subject) {
   const students = res.students || [];
-  const reflMap = {};
-  const peerMap = {};
+  const reflMap = {}, peerMap = {};
   (res.reflections||[]).forEach(r => {
-    const key = String(r.studentId);
-    if (!reflMap[key]) reflMap[key] = [];
-    reflMap[key].push(r);
+    const k = String(r.studentId);
+    if (!reflMap[k]) reflMap[k] = [];
+    reflMap[k].push(r);
   });
   (res.peerReviews||[]).forEach(p => {
-    const key = String(p.reviewerId);
-    if (!peerMap[key]) peerMap[key] = (peerMap[key]||0) + 1;
-    else peerMap[key]++;
+    const k = String(p.reviewerId);
+    peerMap[k] = (peerMap[k]||0) + 1;
   });
-
   let submitted = 0, peerCount = 0;
   const rows = students.map(s => {
     const sid = String(s.id);
@@ -1061,96 +981,86 @@ function renderAdminTable(res, date, period, subject) {
     const periods = [...new Set(refls.map(r=>r.period).filter(Boolean).join(',').split(',').filter(Boolean))];
     const avgEffort = refls.length ? (refls.reduce((a,r)=>a+(+r.effort||0),0)/refls.length).toFixed(1) : '—';
     const subjectList = [...new Set(refls.map(r=>r.subject).filter(Boolean))].join(', ') || '—';
-    return `<tr>
-      <td style="font-weight:600;color:var(--muted-fg)">${s.id}</td>
-      <td style="font-weight:600">${s.name}</td>
-      <td>${s.group||'—'}</td>
-      <td>${periods.length ? periods.map(p=>`<span class="period-tag">${p.replace('교시','')}</span>`).join(' ') : '<span style="color:var(--muted-fg)">—</span>'}</td>
-      <td style="font-size:12px">${subjectList}</td>
-      <td>${hasRefl ? `<span class="status-chip chip-done">✓ 제출 (${refls.length})</span>` : '<span class="status-chip chip-none">미제출</span>'}</td>
-      <td>${peerCnt > 0 ? `<span class="status-chip chip-done">${peerCnt}건</span>` : '<span class="status-chip chip-none">없음</span>'}</td>
-      <td>${avgEffort !== '—' ? `<span class="badge bd-amber">⭐ ${avgEffort}</span>` : '—'}</td>
-    </tr>`;
+    return '<tr>' +
+      '<td style="font-weight:600;color:var(--muted-fg)">' + s.id + '</td>' +
+      '<td style="font-weight:600">' + s.name + '</td>' +
+      '<td>' + (s.group||'—') + '</td>' +
+      '<td>' + (periods.length ? periods.map(p=>'<span class="period-tag">'+p.replace('교시','')+'</span>').join(' ') : '<span style="color:var(--muted-fg)">—</span>') + '</td>' +
+      '<td style="font-size:12px">' + subjectList + '</td>' +
+      '<td>' + (hasRefl ? '<span class="status-chip chip-done">✓ ' + refls.length + '건</span>' : '<span class="status-chip chip-none">미제출</span>') + '</td>' +
+      '<td>' + (peerCnt > 0 ? '<span class="status-chip chip-done">' + peerCnt + '건</span>' : '<span class="status-chip chip-none">없음</span>') + '</td>' +
+      '<td>' + (avgEffort !== '—' ? '<span class="badge bd-amber">★ ' + avgEffort + '</span>' : '—') + '</td>' +
+      '</tr>';
   }).join('');
-
   document.getElementById('ad-tbody').innerHTML = rows || '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--muted-fg)">데이터 없음</td></tr>';
-
-  const total = students.length;
-  document.getElementById('ad-total').textContent = total;
+  document.getElementById('ad-total').textContent = students.length;
   document.getElementById('ad-submitted').textContent = submitted;
   document.getElementById('ad-peer-cnt').textContent = peerCount;
-  document.getElementById('ad-rate').textContent = total ? Math.round(submitted/total*100)+'%' : '0%';
-
+  document.getElementById('ad-rate').textContent = students.length ? Math.round(submitted/students.length*100)+'%' : '0%';
   const filterDesc = [date, period, subject].filter(Boolean).join(' · ') || '전체';
-  document.getElementById('ad-table-title').textContent = `📋 학생별 현황 — ${filterDesc}`;
+  document.getElementById('ad-table-title').textContent = '📋 학생별 현황 — ' + filterDesc;
   document.getElementById('ad-stats').style.display = 'grid';
   document.getElementById('ad-table-card').style.display = 'block';
 }
 
+// ── 유틸
+function g(id) { return document.getElementById(id).value.trim(); }
+function fd(d) { if (!d) return ''; const s = typeof d==='string' ? d : new Date(d).toISOString(); return s.slice(0,10); }
+function toast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = type ? 'show ' + type : 'show';
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function setLoad(p, on) {
+  document.getElementById(p+'-spinner').style.display = on ? 'block' : 'none';
+  document.getElementById(p+'-submit-text').textContent = on ? '저장 중...' : (p==='r' ? '성찰 일지 제출' : '동료 평가 제출');
+  document.getElementById(p+'-submit-btn').disabled = on;
+}
+function resetR() {
+  ['r-id','r-name','r-class','r-learned','r-difficult','r-want'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('r-subject').value = '';
+  effortVal = 0;
+  document.querySelectorAll('#r-effort-stars .eff-btn').forEach(b => b.classList.remove('on'));
+  document.getElementById('r-effort-label').textContent = '1 = 매우 부족 · 5 = 매우 충실';
+  document.getElementById('r-date').value = new Date().toISOString().slice(0,10);
+  for (let i=1;i<=7;i++) { const el=document.getElementById('r-p'+i); if(el) el.checked=false; }
+}
+function resetP() {
+  ['p-my-id','p-my-name','p-my-class','p-peer-id','p-peer-name','p-good','p-ask','p-improve'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('p-subject').value = '';
+  document.getElementById('p-anon').checked = false;
+  ['p-coop','p-comm','p-cont'].forEach(id => { document.getElementById(id).value = 3; document.getElementById(id+'-v').textContent = '3'; });
+  document.getElementById('p-date').value = new Date().toISOString().slice(0,10);
+  for (let i=1;i<=7;i++) { const el=document.getElementById('p-p'+i); if(el) el.checked=false; }
+}
+
 // ── 테스트 모의 응답
-function mock(params) {
-  if (params.action==='validateStudent'||params.studentId) {
-    const studentMap = {'20301':{name:'김민준',classroom:'3-1',group:'A모둠'},'20307':{name:'박지훈',classroom:'3-1',group:'B모둠'},'20315':{name:'이서연',classroom:'3-1',group:'D모둠'},'20322':{name:'최예림',classroom:'3-1',group:'F모둠'}};
-    if (params.action==='validateStudent'||(!params.action&&params.studentId)) {
-      const s=studentMap[params.studentId];
-      return s ? {valid:true,...s} : {valid:false,message:'등록되지 않은 학번입니다.'};
-    }
+function mockResponse(params) {
+  const action = params.action;
+  const sMap = {'20301':{name:'김민준',classroom:'3-1',group:'A모둠'},'20307':{name:'박지훈',classroom:'3-1',group:'B모둠'},'20315':{name:'이서연',classroom:'3-1',group:'D모둠'},'20322':{name:'최예림',classroom:'3-1',group:'F모둠'}};
+  if (action === 'validateStudent') {
+    const s = sMap[String(params.studentId)];
+    return s ? {valid:true,...s} : {valid:false, message:'등록되지 않은 학번입니다.'};
   }
-  if (params.action==='submitReflection') return {success:true};
-  if (params.action==='submitPeerReview') return {success:true};
-  if (params.action==='getStudentRecords') return {
+  if (action === 'submitReflection' || action === 'submitPeerReview') return {success:true};
+  if (action === 'getStudentRecords') return {
     success:true,
     student:{id:params.studentId,name:'김민준',classroom:'3-1',group:'A모둠'},
     reflections:[
-      {date:'2025-03-10',subject:'보건',effort:4,
-       learned:'응급처치의 기본 원칙과 심폐소생술 순서를 배웠습니다.',
-       difficult:'가슴 압박 깊이와 속도 맞추기가 어려웠습니다.',
-       wantToKnow:'AED 사용법을 더 연습해 보고 싶습니다.'},
-      {date:'2025-03-11',subject:'창체진로',effort:3,
-       learned:'HOLLAND 검사로 나의 흥미와 적성을 파악했습니다.',
-       difficult:'',wantToKnow:'관련 직업군을 더 찾아보고 싶습니다.'},
+      {date:'2025-03-10',subject:'보건',effort:4,period:'3교시',learned:'응급처치 기본 원칙을 배웠습니다.',difficult:'가슴 압박이 어려웠습니다.',wantToKnow:'AED 사용법'},
+      {date:'2025-03-11',subject:'창체진로',effort:3,period:'2교시',learned:'HOLLAND 검사로 적성을 파악했습니다.',difficult:'',wantToKnow:'관련 직업군'},
     ],
-    peerReviews:[
-      {date:'2025-03-10',subject:'보건',reviewerName:'이서연',
-       cooperation:5,communication:4,contribution:5,avg:4.7,
-       goodPoints:'모둠 토론을 주도적으로 이끌며 아이디어를 많이 제안했습니다.',
-       improvements:'다른 친구 의견도 더 들어주면 좋겠습니다.'},
-    ],
-    myPeerReviews:[
-      {date:'2025-03-10',subject:'보건',revieweeName:'박지훈',
-       cooperation:4,communication:5,contribution:4,avg:4.3,
-       goodPoints:'발표를 논리적으로 잘 정리해 주었습니다.',
-       improvements:'발표 목소리가 조금 작았습니다.',isAnonymous:'N'},
-      {date:'2025-03-11',subject:'동아리',revieweeName:'최예림',
-       cooperation:5,communication:5,contribution:5,avg:5.0,
-       goodPoints:'모둠 활동에 정말 열심히 참여했습니다.',
-       improvements:'',isAnonymous:'Y'},
-    ]
+    peerReviews:[{date:'2025-03-10',subject:'보건',reviewerName:'이서연',cooperation:5,communication:4,contribution:5,avg:4.7,goodPoints:'토론을 잘 이끌었습니다.',askQuestion:'',improvements:''}],
+    myPeerReviews:[{date:'2025-03-10',subject:'보건',revieweeName:'박지훈',cooperation:4,communication:5,contribution:4,avg:4.3,goodPoints:'발표를 잘 정리했습니다.',askQuestion:'',improvements:'목소리가 작았습니다.',isAnonymous:'N'}]
   };
-  if (params.action==='getAdminData') {
-    const students = [
-      {id:20301,name:'김민준',group:'A모둠'},{id:20302,name:'강다은',group:'A모둠'},
-      {id:20307,name:'박지훈',group:'B모둠'},{id:20315,name:'이서연',group:'D모둠'},
-      {id:20322,name:'최예림',group:'F모둠'},{id:20310,name:'배수진',group:'C모둠'},
-    ];
-    return {
-      success:true, students,
-      reflections:[
-        {studentId:20301,subject:'보건',period:'3교시',effort:4,date:params.date||'2025-03-10'},
-        {studentId:20307,subject:'보건',period:'3교시,4교시',effort:5,date:params.date||'2025-03-10'},
-        {studentId:20315,subject:'창체진로',period:'2교시',effort:3,date:params.date||'2025-03-10'},
-        {studentId:20322,subject:'보건',period:'3교시',effort:5,date:params.date||'2025-03-10'},
-      ],
-      peerReviews:[
-        {reviewerId:20301,date:params.date||'2025-03-10'},
-        {reviewerId:20307,date:params.date||'2025-03-10'},
-        {reviewerId:20307,date:params.date||'2025-03-10'},
-        {reviewerId:20315,date:params.date||'2025-03-10'},
-      ]
-    };
-  }
-  return {valid:false,message:'테스트 모드: 학번 20301로 시도해보세요.'};
+  if (action === 'getAdminData') return {
+    success:true,
+    students:[{id:20301,name:'김민준',group:'A모둠'},{id:20307,name:'박지훈',group:'B모둠'},{id:20315,name:'이서연',group:'D모둠'},{id:20322,name:'최예림',group:'F모둠'}],
+    reflections:[{studentId:20301,subject:'보건',period:'3교시',effort:4,date:'2025-03-10'},{studentId:20307,subject:'보건',period:'3교시',effort:5,date:'2025-03-10'}],
+    peerReviews:[{reviewerId:20301,date:'2025-03-10'},{reviewerId:20307,date:'2025-03-10'}]
+  };
+  return {valid:false, message:'알 수 없는 액션: ' + action};
 }
-</script>
+</script></script>
 </body>
 </html>
